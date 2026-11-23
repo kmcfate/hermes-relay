@@ -94,6 +94,8 @@ from .models import (
 from .providers import adapter_for
 from .providers.base import RealtimeAgentConnection, RealtimeAgentProvider, RealtimeAgentRenderConfig
 from .providers.openai import OpenAIRealtimeAgentProvider
+from .providers.lemonade import LemonadeRealtimeAgentProvider
+from .providers.unmute import UnmuteRealtimeAgentProvider
 from .providers.xai import XAIRealtimeAgentProvider
 
 DEFAULT_SAMPLE_RATE = 24000
@@ -293,6 +295,129 @@ class RealtimeAgentSession:
     floor: RealtimeFloor = field(default_factory=RealtimeFloor)
 
 
+def _read_relay_unmute_realtime_url(config: Any) -> str | None:
+    """Pull ``relay.unmute.realtime_url`` from the operator's Hermes config.
+
+    Mirrors the pattern in :mod:`plugin.relay.profile_voice` — the broker
+    reaches into ``~/.hermes/config.yaml`` directly via
+    ``config.hermes_config_path`` because :class:`RelayConfig` does NOT
+    expose the Hermes ``relay:`` sub-tree as a structured attribute.
+    Falls back to ``UNMUTE_REALTIME_URL`` env var when the key is absent
+    so containerized deploys can still point at the Mac.
+    """
+    import yaml
+
+    candidates: list[str] = []
+    hermes_path = getattr(config, "hermes_config_path", None)
+    if hermes_path:
+        candidates.append(str(hermes_path).replace("~", os.path.expanduser("~")))
+    env_home = os.getenv("HERMES_HOME")
+    if env_home:
+        candidates.append(os.path.join(env_home, "config.yaml"))
+    candidates.append(os.path.expanduser("~/.hermes/config.yaml"))
+
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh)
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        relay = data.get("relay") or {}
+        if not isinstance(relay, dict):
+            continue
+        unmute = relay.get("unmute") or {}
+        if not isinstance(unmute, dict):
+            continue
+        url = unmute.get("realtime_url")
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+    return os.getenv("UNMUTE_REALTIME_URL")
+
+
+def _read_relay_lemonade_realtime_url(config: Any) -> str | None:
+    """Pull ``relay.lemonade.realtime_url`` from the operator's Hermes config.
+
+    Sister to :func:`_read_relay_unmute_realtime_url` — points the new
+    lemonade_realtime provider at the locally-running realtime-bridge
+    (default ``ws://127.0.0.1:8010/v1/realtime``). The LEMONADE_REALTIME_URL
+    env var override matches the same convention.
+    """
+    import yaml
+
+    candidates: list[str] = []
+    hermes_path = getattr(config, "hermes_config_path", None)
+    if hermes_path:
+        candidates.append(str(hermes_path).replace("~", os.path.expanduser("~")))
+    env_home = os.getenv("HERMES_HOME")
+    if env_home:
+        candidates.append(os.path.join(env_home, "config.yaml"))
+    candidates.append(os.path.expanduser("~/.hermes/config.yaml"))
+
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+        relay = data.get("relay") or {}
+        lemonade = relay.get("lemonade") or {}
+        url = lemonade.get("realtime_url")
+        if url:
+            return str(url)
+    return os.getenv("LEMONADE_REALTIME_URL")
+
+
+def _read_relay_lemonade_greeting_enabled(config: Any) -> bool | None:
+    """Pull ``relay.lemonade.greeting_enabled`` from the operator config.
+
+    Sister to :func:`_read_relay_lemonade_realtime_url`. When the operator
+    disables the on-connect greeting the lemonade provider skips the
+    ``response.create`` it would otherwise fire after ``session.update``,
+    leaving the bridge silent until the user speaks — same posture as the
+    stock OpenAI Realtime API on a fresh session without seeded history.
+
+    Returns ``None`` when the key is absent so callers can default to True
+    without conflating "unset" and "explicitly disabled".
+    """
+    import yaml
+
+    candidates: list[str] = []
+    hermes_path = getattr(config, "hermes_config_path", None)
+    if hermes_path:
+        candidates.append(str(hermes_path).replace("~", os.path.expanduser("~")))
+    env_home = os.getenv("HERMES_HOME")
+    if env_home:
+        candidates.append(os.path.join(env_home, "config.yaml"))
+    candidates.append(os.path.expanduser("~/.hermes/config.yaml"))
+
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+        relay = data.get("relay") or {}
+        lemonade = relay.get("lemonade") or {}
+        if "greeting_enabled" in lemonade:
+            raw = lemonade.get("greeting_enabled")
+            if isinstance(raw, bool):
+                return raw
+            if isinstance(raw, str):
+                lowered = raw.strip().lower()
+                if lowered in {"false", "0", "no", "off"}:
+                    return False
+                if lowered in {"true", "1", "yes", "on"}:
+                    return True
+            return bool(raw)
+    return None
+
+
 class RealtimeAgentHandler:
     """Relay-owned realtime-agent broker preserving Hermes as authority."""
 
@@ -304,6 +429,8 @@ class RealtimeAgentHandler:
         self.native_providers: dict[str, RealtimeAgentProvider] = {
             OpenAIRealtimeAgentProvider.provider_id: OpenAIRealtimeAgentProvider(),
             XAIRealtimeAgentProvider.provider_id: XAIRealtimeAgentProvider(),
+            UnmuteRealtimeAgentProvider.provider_id: UnmuteRealtimeAgentProvider(),
+            LemonadeRealtimeAgentProvider.provider_id: LemonadeRealtimeAgentProvider(),
         }
         # Optional durable-fallback hook (wired by the relay server to
         # ProactiveChannel.push, which buffers for an offline phone): a
@@ -1563,6 +1690,17 @@ class RealtimeAgentHandler:
         playback_drained: asyncio.Event,
     ) -> None:
         async for event in connection.events():
+            # Structured dispatch log — surfaces exactly which kind of
+            # provider event arrived and what the broker did with it.
+            # When debugging relay stalls, this is the single line that
+            # tells you whether the bridge is silent, the provider is
+            # mis-classifying frames, or the broker dropped an event.
+            logger.debug(
+                "broker pump: provider event kind=%s response_id=%s provider_event_type=%s",
+                event.kind,
+                event.response_id or "",
+                event.payload.get("provider_event_type", "") if isinstance(event.payload, dict) else "",
+            )
             if event.kind == ProviderEventKind.READY:
                 # Record which model ACTUALLY served: aliases like
                 # grok-voice-latest move server-side, and without this the
@@ -1848,6 +1986,11 @@ class RealtimeAgentHandler:
                     )
                     continue
                 if session.native_forced_summary_active:
+                    logger.info(
+                        "broker pump: function_call -> handle_forced_summary_tool_call name=%s call_id=%s",
+                        _tool_call_from_provider_event(event).name,
+                        _tool_call_from_provider_event(event).call_id,
+                    )
                     await self._handle_forced_summary_tool_call(
                         ws,
                         session,
@@ -1857,6 +2000,11 @@ class RealtimeAgentHandler:
                     )
                     continue
                 if session.native_forced_summary_done:
+                    logger.warning(
+                        "broker pump: function_call DROPPED (forced_summary_done); name=%s call_id=%s",
+                        _tool_call_from_provider_event(event).name,
+                        _tool_call_from_provider_event(event).call_id,
+                    )
                     self._log(
                         session,
                         "voice.response.suppressed_forced_summary_tool_call",
@@ -1868,7 +2016,17 @@ class RealtimeAgentHandler:
                     )
                     continue
                 if not self._should_forward_provider_response_event(session, event):
+                    logger.debug(
+                        "broker pump: function_call dropped by _should_forward_provider_response_event"
+                    )
                     continue
+                call = _tool_call_from_provider_event(event)
+                logger.info(
+                    "broker pump: function_call -> handle_provider_tool_call name=%s call_id=%s response_id=%s",
+                    call.name,
+                    call.call_id,
+                    event.response_id or "",
+                )
                 await self._handle_provider_tool_call(
                     ws,
                     session,
@@ -4570,6 +4728,32 @@ class RealtimeAgentHandler:
                 if ws_url:
                     provider_options.setdefault("url", ws_url)
                 provider_options.setdefault("auth_source", token.source)
+        elif session.provider == "unmute_realtime":
+            # Kyutai Unmute runs on a separate host. The broker must inject the
+            # operator-configured ``relay.unmute.realtime_url`` so the provider
+            # doesn't fall back to its localhost:8000 default. This mirrors the
+            # xai branch above: pull from the same Hermes config the
+            # STT/TTS UnmuteProvider classes read, and never overwrite an
+            # explicit provider_options["url"] (lets the phone override per
+            # session for debugging).
+            unmute_url = _read_relay_unmute_realtime_url(self.config)
+            if unmute_url:
+                provider_options.setdefault("url", unmute_url)
+        elif session.provider == "lemonade_realtime":
+            # Local Lemonade bridge on the local host. Default lives in the
+            # provider module; operator config + env override.
+            lemonade_url = _read_relay_lemonade_realtime_url(self.config)
+            if lemonade_url:
+                provider_options.setdefault("url", lemonade_url)
+            # On-connect greeting is opt-out per operator config. Default
+            # keeps the existing behavior (greet on connect) so the bridge
+            # isn't silent until the user speaks. Setting
+            # ``relay.lemonade.greeting_enabled: false`` in Hermes config
+            # suppresses the response.create — useful when the Android
+            # client's post-greeting state machine needs a silent handshake.
+            greeting_enabled = _read_relay_lemonade_greeting_enabled(self.config)
+            if greeting_enabled is not None:
+                provider_options.setdefault("greeting_enabled", greeting_enabled)
         return provider_options
 
     def _validate_provider(self, provider: str) -> None:
@@ -4880,7 +5064,11 @@ def _native_instructions(session: RealtimeAgentSession) -> str:
         "message says Hermes has already handled the request, treat it as the "
         "final answer step: do not call tools, do not say you will check, and "
         "summarize the provided Hermes result directly. Format speech for "
-        "listening: say dates, "
+        "listening: never use Markdown emphasis (no asterisks, underscores, "
+        "backticks, hash headings, blockquotes, or bracket links) — these are "
+        "spoken verbatim as the literal word 'asterisk' or similar and ruin the "
+        "voice output. Reply in plain prose with natural sentence rhythm; let "
+        "stress come from wording, not punctuation. Say dates, "
         "times, currency, percentages, versions, measurements, and counts in "
         "natural spoken form. Summarize long IDs, hashes, UUIDs, URLs, file paths, "
         "JSON, logs, stack traces, tables, and dense numeric strings instead of "

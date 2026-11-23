@@ -12,6 +12,10 @@ from .providers.openai_realtime import OpenAIRealtimeProvider
 from .providers.stub import StubToneProvider
 from .providers.xai_tts import XAITTSProvider
 from .providers.xai_realtime import XAIRealtimeProvider
+from .providers.lemonade_realtime import LemonadeRealtimeProvider
+from .providers.unmute_realtime import UnmuteRealtimeProvider
+from .providers.unmute_stt import UnmuteVoiceLabSTTProvider
+from .providers.unmute_tts import UnmuteVoiceLabTTSProvider
 
 ProviderFactory = Callable[[], VoiceProvider]
 
@@ -61,4 +65,12 @@ def default_registry() -> ProviderRegistry:
     registry.register(StubToneProvider.info, StubToneProvider)
     registry.register(XAITTSProvider.info, XAITTSProvider)
     registry.register(XAIRealtimeProvider.info, XAIRealtimeProvider)
+    registry.register(UnmuteRealtimeProvider.info, UnmuteRealtimeProvider)
+    registry.register(LemonadeRealtimeProvider.info, LemonadeRealtimeProvider)
+    registry.register(
+        UnmuteVoiceLabSTTProvider.info, UnmuteVoiceLabSTTProvider
+    )
+    registry.register(
+        UnmuteVoiceLabTTSProvider.info, UnmuteVoiceLabTTSProvider
+    )
     return registry
