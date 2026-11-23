@@ -70,9 +70,13 @@ class VoiceLabTests(unittest.TestCase):
             registry.provider_ids(),
             [
                 "elevenlabs_tts",
+                "lemonade_realtime",
                 "openai_realtime",
                 "openai_tts",
                 "stub",
+                "unmute_realtime",
+                "unmute_stt",
+                "unmute_tts",
                 "xai_realtime",
                 "xai_tts",
             ],

@@ -166,3 +166,39 @@ def register(ctx):
         # Older hermes-agent (v0.7.0 and earlier) — CLI commands not registered.
         # The tools above still work; users can fall back to `python -m plugin.relay`.
         pass
+
+    # Register Kyutai Unmute (moshi-server) as a plugin TTS + STT provider.
+    # The relay's voice_output broker reads ``tts.provider: unmute`` and the
+    # upstream STT dispatcher reads ``stt.provider: unmute``; both end up
+    # here. Endpoints default to ws://127.0.0.1:{8091,8092} and can be
+    # overridden via ``relay.unmute.{stt,tts}_url`` in ~/.hermes/config.yaml.
+    try:
+        from .unmute_provider import (
+            UnmuteSTTProvider,
+            UnmuteTTSProvider,
+            _resolve_unmute_config,
+        )
+
+        endpoint = _resolve_unmute_config(None)
+        ctx.register_tts_provider(UnmuteTTSProvider(endpoint=endpoint))
+        ctx.register_transcription_provider(UnmuteSTTProvider(endpoint=endpoint))
+        logger.info(
+            "Unmute plugin providers registered (stt=%s tts=%s)",
+            endpoint.stt_url,
+            endpoint.tts_url,
+        )
+    except (AttributeError, ImportError):
+        # Older hermes-agent (no plugin TTS/STT registries) — unmute
+        # providers simply don't activate. Voice path falls back to the
+        # configured built-in (Lemonade Edge default).
+        logger.debug(
+            "Plugin TTS/STT registries unavailable; skipping Unmute registration",
+            exc_info=True,
+        )
+    except Exception:
+        # Don't let a malformed moshi-server config break plugin load —
+        # the user can still use every other voice engine.
+        logger.warning(
+            "Unmute plugin provider registration failed; continuing",
+            exc_info=True,
+        )

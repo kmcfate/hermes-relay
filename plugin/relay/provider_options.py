@@ -85,6 +85,39 @@ OPENAI_REALTIME_VOICES = (
 )
 OPENAI_RECOMMENDED_VOICES = ("marin", "cedar", "coral")
 
+# Kokoro-82M voices exposed by the local Lemonade bridge. The bridge's emotion
+# mapper (realtime-bridge/bridge/emotion.py) also overwrites the voice
+# based on the active VoiceExpression, so this list is the *user-pickable*
+# baseline before any emotion routing kicks in.
+LEMONADE_KOKORO_VOICES = (
+    "af_heart",
+    "af_bella",
+    "af_nicole",
+    "af_sky",
+    "af_sarah",
+    "af_allison",
+    "am_adam",
+    "am_michael",
+    "bm_daniel",
+    "bm_george",
+    "bm_fable",
+    "bf_alice",
+    "bf_emma",
+    "ef_dora",
+    "em_alex",
+    "ff_siwesi",
+)
+LEMONADE_RECOMMENDED_VOICES = ("af_heart", "af_bella", "af_sky", "bm_daniel")
+
+# Kyutai Unmute voice catalog. Sourced from /v1/voices on the unmute
+# backend (orchestrator advertises the Moshi/Unmute voice roster
+# verbatim). Update alongside upstream releases.
+UNMUTE_REALTIME_VOICES = (
+    "Watercooler",
+    "Cartesia-British-Reading-Lady",
+)
+UNMUTE_RECOMMENDED_VOICES = ("Watercooler",)
+
 _OPTION_CACHE: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 
 
@@ -174,6 +207,10 @@ def fetch_realtime_provider_options(
         result = _fetch_xai_provider_options(xai_auth=xai_auth)
     elif provider_id == "openai_realtime":
         result = _openai_realtime_static_provider_options()
+    elif provider_id == "unmute_realtime":
+        result = _unmute_realtime_static_provider_options()
+    elif provider_id == "lemonade_realtime":
+        result = _lemonade_realtime_static_provider_options()
     else:
         result = static_provider_options()
     _cache_put(cache_key, result)
@@ -742,6 +779,80 @@ def _openai_realtime_static_provider_options() -> dict[str, Any]:
             "message": (
                 "OpenAI realtime voice choices are advertised from the official "
                 "docs/API schema; no general voice-list endpoint is used."
+            ),
+        },
+    }
+
+
+def _unmute_realtime_static_provider_options() -> dict[str, Any]:
+    return {
+        "provider": {
+            "voice_groups": [
+                {
+                    "id": "unmute_realtime_builtin",
+                    "label": "Kyutai Unmute voices",
+                    "values": list(UNMUTE_REALTIME_VOICES),
+                    "source": "unmute_backend_voices",
+                    "recommended": list(UNMUTE_RECOMMENDED_VOICES),
+                }
+            ],
+            "voice_metadata": _voice_metadata(
+                UNMUTE_REALTIME_VOICES,
+                source="unmute_backend_voices",
+                recommended=UNMUTE_RECOMMENDED_VOICES,
+            ),
+            "model_voice_compatibility": {
+                "moshi-realtime": list(UNMUTE_REALTIME_VOICES),
+            },
+            "recommended_voices": list(UNMUTE_RECOMMENDED_VOICES),
+            "requires_manual_id": False,
+        },
+        "dynamic": {
+            "attempted": False,
+            "status": "static",
+            "source": "unmute_backend_voices",
+            "message": (
+                "Unmute backend advertises its voice roster through /v1/voices; "
+                "the relay exposes a static snapshot so the Android picker does "
+                "not depend on the orchestrator being reachable at startup."
+            ),
+        },
+    }
+
+
+def _lemonade_realtime_static_provider_options() -> dict[str, Any]:
+    return {
+        "provider": {
+            "voice_groups": [
+                {
+                    "id": "lemonade_kokoro_builtin",
+                    "label": "Lemonade Kokoro voices (local bridge)",
+                    "values": list(LEMONADE_KOKORO_VOICES),
+                    "source": "lemonade_kokoro",
+                    "recommended": list(LEMONADE_RECOMMENDED_VOICES),
+                }
+            ],
+            "voice_metadata": _voice_metadata(
+                LEMONADE_KOKORO_VOICES,
+                source="lemonade_kokoro",
+                recommended=LEMONADE_RECOMMENDED_VOICES,
+            ),
+            "model_voice_compatibility": {
+                "Bonsai-1.7B-gguf": list(LEMONADE_KOKORO_VOICES),
+                "kokoro-v1": list(LEMONADE_KOKORO_VOICES),
+            },
+            "recommended_voices": list(LEMONADE_RECOMMENDED_VOICES),
+            "requires_manual_id": False,
+        },
+        "dynamic": {
+            "attempted": False,
+            "status": "static",
+            "source": "lemonade_kokoro",
+            "message": (
+                "Lemonade realtime advertises the Kokoro-82M voice roster "
+                "served by the local bridge; the relay exposes a static "
+                "snapshot so the Android picker does not depend on the "
+                "bridge being reachable at startup."
             ),
         },
     }
